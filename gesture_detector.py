@@ -27,7 +27,7 @@ def get_fingers(landmarks):
   )
   ring=finger_up(
     landmarks,
-    20,
+    16,
     14
   )
 
