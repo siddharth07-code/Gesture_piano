@@ -6,6 +6,9 @@ MODEL_PATH="models/hand_landmarker.task"
 SAMPLE_RATE=44100
 AUDIO_BLOCK_SIZE=512
 
+AUDIO_CHANNELS=2
+PIANO_SAMPLES_DIR="piano_samples"
+
 NOTES=[
   "C",
   "D",
@@ -16,13 +19,23 @@ NOTES=[
   "B"
 ]
 
+CHROMATIC_NOTES=[
+    "C", "C#", "D", "D#", "E", "F",
+    "F#", "G", "G#", "A", "A#", "B"
+]
+
 NOTE_FREQUENCIES={
     "C": 261.63,
+    "C#": 277.18,
     "D": 293.66,
+    "D#": 311.13,
     "E": 329.63,
     "F": 349.23,
+    "F#": 369.99,
     "G": 392.00,
+    "G#": 415.30,
     "A": 440.00,
+    "A#": 466.16,
     "B": 493.88
 }
 
@@ -35,11 +48,16 @@ CHORD_INTERVALS = {
 
 NOTE_INDEX = {
     "C": 0,
+    "C#": 1,
     "D": 2,
+    "D#": 3,
     "E": 4,
     "F": 5,
+    "F#": 6,
     "G": 7,
+    "G#": 8,
     "A": 9,
+    "A#": 10,
     "B": 11
 }
 

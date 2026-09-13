@@ -27,10 +27,13 @@ from audio_engine import AudioEngine
 from recorder import Recorder
 
 
+FIXED_OCTAVE = 4
+
+
 def get_root_chord(
     root,
     chord_type,
-    octave=4
+    octave=FIXED_OCTAVE
 ):
 
     root_index = NOTE_INDEX[root]
@@ -202,16 +205,22 @@ def main():
     # State
     # -------------------------
 
+    # Right hand melody state
     current_note = None
+    pending_note = None
+    pending_note_frames = 0
+    right_hand_absent_frames = 0
+
+    # Left hand chord state
     current_chord = None
+    current_chord_root = None
+    current_chord_notes = []
+    pending_chord = None
+    pending_chord_frames = 0
+    left_hand_absent_frames = 0
 
-    octave = 4
-
-    last_note_time = 0
-    last_chord_time = 0
-
-    NOTE_COOLDOWN = 0.12
-    CHORD_COOLDOWN = 0.25
+    # Debounce threshold (consecutive frames needed to confirm a key/chord change)
+    DEBOUNCE_FRAMES = 2
 
     # -------------------------
     # Main loop
@@ -316,37 +325,20 @@ def main():
                 "INDEX",
                 "TWO"
             ):
+                right_hand_absent_frames = 0
 
                 note = piano.get_key(
                     x
                 )
 
                 if note:
-
-                    if gesture == "TWO":
-
-                        play_octave = (
-                            octave + 1
-                        )
-
-                    else:
-
-                        play_octave = octave
-
                     active_note = note
 
-                    now = time.time()
-
-                    if (
-                        note != current_note
-                        or
-                        now - last_note_time
-                        > NOTE_COOLDOWN
-                    ):
-
+                    if current_note is None:
+                        # No previously active melody note -> trigger immediately
                         audio.note_on(
                             note,
-                            play_octave
+                            FIXED_OCTAVE
                         )
 
                         recorder.add_event(
@@ -354,34 +346,91 @@ def main():
                             [
                                 (
                                     note,
-                                    play_octave
+                                    FIXED_OCTAVE
                                 )
                             ]
                         )
 
                         current_note = note
+                        pending_note = None
+                        pending_note_frames = 0
 
-                        last_note_time = now
+                    elif note == current_note:
+                        # Still pointing at the same piano key -> keep existing voice playing
+                        # Do not call note_on() again
+                        pending_note = None
+                        pending_note_frames = 0
 
-            elif gesture == "THREE":
+                    else:
+                        # Detected piano key changed -> debounce before switching
+                        if note == pending_note:
+                            pending_note_frames += 1
+                            if pending_note_frames >= DEBOUNCE_FRAMES:
+                                audio.note_off(
+                                    current_note,
+                                    FIXED_OCTAVE
+                                )
 
-                octave = min(
-                    6,
-                    octave + 1
-                )
+                                audio.note_on(
+                                    note,
+                                    FIXED_OCTAVE
+                                )
 
-                current_note = None
+                                recorder.add_event(
+                                    "NOTE",
+                                    [
+                                        (
+                                            note,
+                                            FIXED_OCTAVE
+                                        )
+                                    ]
+                                )
+
+                                current_note = note
+                                pending_note = None
+                                pending_note_frames = 0
+                        else:
+                            pending_note = note
+                            pending_note_frames = 1
 
             elif gesture == "FIST":
+                right_hand_absent_frames = 0
+                pending_note = None
+                pending_note_frames = 0
 
                 if current_note:
-
                     audio.note_off(
                         current_note,
-                        octave
+                        FIXED_OCTAVE
                     )
+                    current_note = None
+                piano.clear_active_note()
 
-                current_note = None
+            else:
+                pending_note = None
+                pending_note_frames = 0
+                right_hand_absent_frames += 1
+                if right_hand_absent_frames > 15:
+                    if current_note:
+                        audio.note_off(
+                            current_note,
+                            FIXED_OCTAVE
+                        )
+                        current_note = None
+                    piano.clear_active_note()
+
+        else:
+            pending_note = None
+            pending_note_frames = 0
+            right_hand_absent_frames += 1
+            if right_hand_absent_frames > 15:
+                if current_note:
+                    audio.note_off(
+                        current_note,
+                        FIXED_OCTAVE
+                    )
+                    current_note = None
+                piano.clear_active_note()
 
         # =================================================
         # LEFT HAND → CHORD
@@ -410,29 +459,20 @@ def main():
                 root
                 and chord_type
             ):
+                left_hand_absent_frames = 0
+                detected_chord = (root, chord_type)
 
-                now = time.time()
-
-                if (
-                    chord_type != current_chord
-                    or
-                    now - last_chord_time
-                    > CHORD_COOLDOWN
-                ):
-
-                    # Stop previous chord
-                    audio.stop_all()
-
+                if current_chord_root is None or current_chord is None:
+                    # No previous chord active -> trigger immediately
                     chord_notes = (
                         get_root_chord(
                             root,
                             chord_type,
-                            octave
+                            FIXED_OCTAVE
                         )
                     )
 
                     for note, note_octave in chord_notes:
-
                         audio.note_on(
                             note,
                             note_octave
@@ -444,13 +484,101 @@ def main():
                     )
 
                     current_chord = chord_type
+                    current_chord_root = root
+                    current_chord_notes = chord_notes
+                    pending_chord = None
+                    pending_chord_frames = 0
 
-                    last_chord_time = now
+                elif detected_chord == (current_chord_root, current_chord):
+                    # Same chord and root -> keep playing, do NOT restart
+                    pending_chord = None
+                    pending_chord_frames = 0
+
+                else:
+                    # Chord or root changed -> debounce before switching
+                    if detected_chord == pending_chord:
+                        pending_chord_frames += 1
+                        if pending_chord_frames >= DEBOUNCE_FRAMES:
+                            # Release previous chord notes smoothly without cutting off melody
+                            for note, note_octave in current_chord_notes:
+                                audio.note_off(
+                                    note,
+                                    note_octave
+                                )
+
+                            chord_notes = (
+                                get_root_chord(
+                                    root,
+                                    chord_type,
+                                    FIXED_OCTAVE
+                                )
+                            )
+
+                            for note, note_octave in chord_notes:
+                                audio.note_on(
+                                    note,
+                                    note_octave
+                                )
+
+                            recorder.add_event(
+                                "CHORD",
+                                chord_notes
+                            )
+
+                            current_chord = chord_type
+                            current_chord_root = root
+                            current_chord_notes = chord_notes
+                            pending_chord = None
+                            pending_chord_frames = 0
+                    else:
+                        pending_chord = detected_chord
+                        pending_chord_frames = 1
 
             elif gesture == "FIST":
+                left_hand_absent_frames = 0
+                pending_chord = None
+                pending_chord_frames = 0
 
-                audio.stop_all()
+                if current_chord_notes:
+                    for note, note_octave in current_chord_notes:
+                        audio.note_off(
+                            note,
+                            note_octave
+                        )
+                    current_chord_notes = []
+
                 current_chord = None
+                current_chord_root = None
+
+            else:
+                pending_chord = None
+                pending_chord_frames = 0
+                left_hand_absent_frames += 1
+                if left_hand_absent_frames > 15:
+                    if current_chord_notes:
+                        for note, note_octave in current_chord_notes:
+                            audio.note_off(
+                                note,
+                                note_octave
+                            )
+                        current_chord_notes = []
+                    current_chord = None
+                    current_chord_root = None
+
+        else:
+            pending_chord = None
+            pending_chord_frames = 0
+            left_hand_absent_frames += 1
+            if left_hand_absent_frames > 15:
+                if current_chord_notes:
+                    for note, note_octave in current_chord_notes:
+                        audio.note_off(
+                            note,
+                            note_octave
+                        )
+                    current_chord_notes = []
+                current_chord = None
+                current_chord_root = None
 
         # =================================================
         # UI
@@ -459,7 +587,7 @@ def main():
         cv2.rectangle(
             frame,
             (0, 0),
-            (CAMERA_WIDTH, 170),
+            (CAMERA_WIDTH, 140),
             (20, 20, 20),
             -1
         )
@@ -476,18 +604,8 @@ def main():
 
         cv2.putText(
             frame,
-            f"Octave: {octave}",
-            (30, 80),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2
-        )
-
-        cv2.putText(
-            frame,
             f"Gesture: {detected_gesture}",
-            (30, 115),
+            (30, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (255, 255, 255),
